@@ -8,9 +8,10 @@ Valuation and Quality require Phase 5 (valuation engine) and Phase 3
 (earnings-quality flags) respectively; until those exist, they are marked
 "pending" rather than guessed, and excluded from the weighted total with
 that fact clearly stated.
+
+Accepts a pre-fetched metrics dict + growth figures, computed once per
+company by the caller — avoids redundant DB queries during screening.
 """
-from sqlalchemy.orm import Session
-from app.screener.metric_aggregator import calculate_metric_cagr, calculate_yoy_growth
 from app.screener.ratio_calculator import (
     net_margin, roe, roce, debt_to_equity, interest_coverage,
     current_ratio, cfo_to_pat
@@ -27,10 +28,6 @@ COMPONENT_WEIGHTS = {
 
 
 def _bucket_score(value: float | None, thresholds: list[tuple[float, int]], default: int = 50) -> int:
-    """
-    Maps a value to a 0-100 score using ordered (threshold, score) pairs,
-    evaluated highest-threshold-first. Returns `default` if value is None.
-    """
     if value is None:
         return default
     for threshold, score in thresholds:
@@ -39,10 +36,7 @@ def _bucket_score(value: float | None, thresholds: list[tuple[float, int]], defa
     return thresholds[-1][1] if thresholds else default
 
 
-def score_growth(session: Session, company_id: int) -> dict:
-    revenue_cagr = calculate_metric_cagr(session, company_id, "revenue", years=3)
-    revenue_yoy = calculate_yoy_growth(session, company_id, "revenue")
-
+def score_growth(revenue_cagr: float | None, revenue_yoy: float | None) -> dict:
     cagr_score = _bucket_score(revenue_cagr, [
         (0.20, 100), (0.15, 85), (0.10, 70), (0.05, 55), (0.0, 40), (-1.0, 20)
     ])
@@ -53,17 +47,15 @@ def score_growth(session: Session, company_id: int) -> dict:
     available = [s for s, v in [(cagr_score, revenue_cagr), (yoy_score, revenue_yoy)] if v is not None]
     score = round(sum(available) / len(available)) if available else None
 
-    rationale = []
-    rationale.append(f"3yr revenue CAGR: {revenue_cagr:.1%}" if revenue_cagr is not None else "3yr revenue CAGR: N/A")
-    rationale.append(f"Latest YoY revenue growth: {revenue_yoy:.1%}" if revenue_yoy is not None else "Latest YoY revenue growth: N/A")
-
+    rationale = [
+        f"3yr revenue CAGR: {revenue_cagr:.1%}" if revenue_cagr is not None else "3yr revenue CAGR: N/A",
+        f"Latest YoY revenue growth: {revenue_yoy:.1%}" if revenue_yoy is not None else "Latest YoY revenue growth: N/A",
+    ]
     return {"score": score, "rationale": rationale}
 
 
-def score_profitability(session: Session, company_id: int) -> dict:
-    nm = net_margin(session, company_id)
-    r_oe = roe(session, company_id)
-    r_oce = roce(session, company_id)
+def score_profitability(metrics: dict) -> dict:
+    nm, r_oe, r_oce = net_margin(metrics), roe(metrics), roce(metrics)
 
     nm_score = _bucket_score(nm, [(0.20, 100), (0.15, 85), (0.10, 70), (0.05, 55), (0.0, 40), (-1.0, 20)])
     roe_score = _bucket_score(r_oe, [(0.20, 100), (0.15, 85), (0.10, 70), (0.05, 55), (0.0, 40), (-1.0, 20)])
@@ -81,12 +73,9 @@ def score_profitability(session: Session, company_id: int) -> dict:
     return {"score": score, "rationale": rationale}
 
 
-def score_balance_sheet(session: Session, company_id: int) -> dict:
-    de = debt_to_equity(session, company_id)
-    ic = interest_coverage(session, company_id)
-    cr = current_ratio(session, company_id)
+def score_balance_sheet(metrics: dict) -> dict:
+    de, ic, cr = debt_to_equity(metrics), interest_coverage(metrics), current_ratio(metrics)
 
-    # Lower D/E is better -> thresholds go the opposite direction
     de_score = _bucket_score(-de if de is not None else None, [
         (-0.0, 100), (-0.5, 80), (-1.0, 60), (-2.0, 40), (-1e9, 20)
     ]) if de is not None else None
@@ -105,11 +94,9 @@ def score_balance_sheet(session: Session, company_id: int) -> dict:
     return {"score": score, "rationale": rationale}
 
 
-def score_cash_flow(session: Session, company_id: int) -> dict:
-    ratio = cfo_to_pat(session, company_id)
+def score_cash_flow(metrics: dict) -> dict:
+    ratio = cfo_to_pat(metrics)
 
-    # Healthy CFO/PAT is roughly 0.8-1.5x; too low = weak cash conversion,
-    # very high can indicate one-off items — both ends flagged moderately.
     if ratio is None:
         score = None
     elif 0.8 <= ratio <= 1.5:
@@ -119,13 +106,13 @@ def score_cash_flow(session: Session, company_id: int) -> dict:
     elif ratio < 0.5:
         score = 30
     else:
-        score = 55  # very high ratio — unusual, worth analyst attention
+        score = 55
 
     rationale = [f"CFO/PAT: {ratio:.2f}" if ratio is not None else "CFO/PAT: N/A"]
     return {"score": score, "rationale": rationale}
 
 
-def calculate_fundamental_score(session: Session, company_id: int) -> dict:
+def calculate_fundamental_score(metrics: dict, revenue_cagr: float | None, revenue_yoy: float | None) -> dict:
     """
     Returns full auditable breakdown: each component's score, weight,
     weighted contribution, and rationale. Valuation and Quality are
@@ -133,10 +120,10 @@ def calculate_fundamental_score(session: Session, company_id: int) -> dict:
     never guessed.
     """
     components = {
-        "growth": score_growth(session, company_id),
-        "profitability": score_profitability(session, company_id),
-        "balance_sheet": score_balance_sheet(session, company_id),
-        "cash_flow": score_cash_flow(session, company_id),
+        "growth": score_growth(revenue_cagr, revenue_yoy),
+        "profitability": score_profitability(metrics),
+        "balance_sheet": score_balance_sheet(metrics),
+        "cash_flow": score_cash_flow(metrics),
         "valuation": {"score": None, "rationale": ["Pending — requires Phase 5 (Valuation Engine)"]},
         "quality": {"score": None, "rationale": ["Pending — requires Phase 3 (Earnings Quality Flags)"]},
     }
@@ -176,6 +163,9 @@ def calculate_fundamental_score(session: Session, company_id: int) -> dict:
 if __name__ == "__main__":
     from app.data.db import SessionLocal
     from app.data.models import Company
+    from app.screener.metric_aggregator import (
+        get_latest_metrics_bulk, calculate_metric_cagr, calculate_yoy_growth
+    )
 
     session = SessionLocal()
     company = session.query(Company).filter_by(ticker="RELIANCE.NS").first()
@@ -183,7 +173,11 @@ if __name__ == "__main__":
     if not company:
         print("RELIANCE.NS not found — run scripts/load_company.py first")
     else:
-        result = calculate_fundamental_score(session, company.id)
+        metrics = get_latest_metrics_bulk(session, company.id)
+        revenue_cagr = calculate_metric_cagr(session, company.id, "revenue", years=3)
+        revenue_yoy = calculate_yoy_growth(session, company.id, "revenue")
+
+        result = calculate_fundamental_score(metrics, revenue_cagr, revenue_yoy)
         print(f"Fundamental Score for {company.name}\n")
         for name, comp in result["components"].items():
             print(f"[{name.upper()}] weight={comp['weight_pct']}% score={comp['score']} "

@@ -65,6 +65,43 @@ def get_latest_metric(
     return None
 
 
+def get_latest_metrics_bulk(session: Session, company_id: int, period_type: str = "annual") -> dict:
+    """
+    Fetches the latest value for every canonical metric in one pass —
+    one DB query instead of one query per metric. Used by profile
+    builders that need many metrics at once (screener, scoring), which
+    otherwise triggers dozens of round trips per company.
+    Returns {canonical_name: value_or_None}.
+    """
+    stmt = (
+        select(FinancialMetric)
+        .where(
+            FinancialMetric.company_id == company_id,
+            FinancialMetric.period_type == period_type,
+            FinancialMetric.is_missing == False,  # noqa: E712
+        )
+    )
+    rows = session.execute(stmt).scalars().all()
+
+    # Index by metric_name -> most recent row for that name
+    latest_by_name = {}
+    for row in rows:
+        existing = latest_by_name.get(row.metric_name)
+        if existing is None or row.period_end_date > existing.period_end_date:
+            latest_by_name[row.metric_name] = row
+
+    # Resolve each canonical name via its alias list against the index
+    result = {}
+    for canonical, aliases in METRIC_ALIASES.items():
+        value = None
+        for alias in aliases:
+            if alias in latest_by_name:
+                value = latest_by_name[alias].value
+                break
+        result[canonical] = value
+    return result
+
+
 def get_metric_series(
     session: Session, company_id: int, canonical_name: str, period_type: str = "annual", limit: int = 5
 ) -> list[dict]:
@@ -162,5 +199,10 @@ if __name__ == "__main__":
 
         revenue_yoy = calculate_yoy_growth(session, company.id, "revenue")
         print(f"Latest revenue YoY growth: {revenue_yoy}")
+
+        print("\nBulk metrics fetch:")
+        bulk = get_latest_metrics_bulk(session, company.id)
+        for k, v in bulk.items():
+            print(f"  {k}: {v}")
 
     session.close()
