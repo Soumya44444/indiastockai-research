@@ -20,6 +20,26 @@ def fetch_company_info(ticker: str) -> dict:
     }
 
 
+def fetch_market_data(ticker: str) -> dict:
+    """
+    Live market data needed for valuation (P/E, EV/EBITDA, P/B, price targets).
+    Fetched fresh rather than stored historically — current price/shares
+    outstanding are point-in-time snapshots, not audited financial statements.
+    """
+    t = yf.Ticker(ticker)
+    info = t.info
+    return {
+        "ticker": ticker,
+        "current_price": info.get("currentPrice") or info.get("regularMarketPrice"),
+        "market_cap": info.get("marketCap"),
+        "shares_outstanding": info.get("sharesOutstanding"),
+        "trailing_pe": info.get("trailingPE"),
+        "price_to_book": info.get("priceToBook"),
+        "enterprise_value": info.get("enterpriseValue"),
+        "beta": info.get("beta"),
+    }
+
+
 def fetch_business_profile(ticker: str) -> dict:
     """
     Descriptive business/industry metadata (project spec Section 7).
