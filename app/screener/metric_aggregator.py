@@ -21,6 +21,13 @@ METRIC_ALIASES = {
     "operating_cash_flow": ["operating_cash_flow", "cash_flow_from_continuing_operating_activities"],
     "free_cash_flow": ["free_cash_flow"],
     "ebitda": ["ebitda", "normalized_ebitda"],
+    "ebit": ["ebit"],
+    "gross_profit": ["gross_profit"],
+    "interest_expense": ["interest_expense"],
+    "current_assets": ["current_assets"],
+    "current_liabilities": ["current_liabilities"],
+    "pretax_income": ["pretax_income"],
+    "tax_provision": ["tax_provision"],
 }
 
 
