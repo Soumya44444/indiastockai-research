@@ -8,3 +8,6 @@ python-dotenv
 pydantic
 pydantic-settings
 pytest
+pypdf
+sentence-transformers
+chromadb
