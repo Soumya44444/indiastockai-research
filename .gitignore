@@ -7,3 +7,4 @@ db/data/
 *.log
 .vscode/
 data/sample_documents/*.pdf
+db/chroma/
