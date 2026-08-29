@@ -5,6 +5,7 @@ into the Supabase database. Usage: python -m scripts.load_company RELIANCE.NS
 Uses bulk delete-then-insert per company for speed (fine for a research
 tool refreshing one company at a time; not meant for massive concurrent loads).
 Metrics are run through the validation layer before storage.
+Skips gracefully (no crash) if the ticker returns no valid company data.
 """
 import sys
 from app.data.db import SessionLocal
@@ -40,6 +41,11 @@ def load_company(ticker: str):
     try:
         print(f"Fetching {ticker} from yfinance...")
         info = fetch_company_info(ticker)
+
+        if not info.get("name"):
+            print(f"  Skipping {ticker}: no company data returned (possibly delisted/renamed)")
+            return
+
         prices = fetch_price_history(ticker, period="5y")
         metrics = fetch_financial_metrics(ticker)
 
