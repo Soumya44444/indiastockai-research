@@ -20,6 +20,26 @@ def fetch_company_info(ticker: str) -> dict:
     }
 
 
+def fetch_business_profile(ticker: str) -> dict:
+    """
+    Descriptive business/industry metadata (project spec Section 7).
+    Fetched live rather than stored — this is qualitative context, not
+    an auditable financial figure, so it doesn't need the EAV treatment.
+    """
+    t = yf.Ticker(ticker)
+    info = t.info
+    return {
+        "ticker": ticker,
+        "business_summary": info.get("longBusinessSummary"),
+        "sector": info.get("sector"),
+        "industry": info.get("industry"),
+        "country": info.get("country"),
+        "website": info.get("website"),
+        "full_time_employees": info.get("fullTimeEmployees"),
+        "city": info.get("city"),
+    }
+
+
 def fetch_price_history(ticker: str, period: str = "5y") -> list[dict]:
     """OHLCV price history, normalized to list of dicts."""
     t = yf.Ticker(ticker)
@@ -95,3 +115,7 @@ if __name__ == "__main__":
     print(f"\nFinancial metrics: {len(metrics)} records")
     for m in metrics[:5]:
         print(" ", m)
+
+    business = fetch_business_profile(ticker)
+    print(f"\nBusiness profile: {business['country']}, {business['city']}, "
+          f"{business['full_time_employees']} employees")
