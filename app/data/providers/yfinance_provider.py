@@ -20,6 +20,26 @@ def fetch_company_info(ticker: str) -> dict:
     }
 
 
+def fetch_business_profile(ticker: str) -> dict:
+    """
+    Descriptive business/industry metadata (project spec Section 7).
+    Fetched live rather than stored — this is qualitative context, not
+    an auditable financial figure, so it doesn't need the EAV treatment.
+    """
+    t = yf.Ticker(ticker)
+    info = t.info
+    return {
+        "ticker": ticker,
+        "business_summary": info.get("longBusinessSummary"),
+        "sector": info.get("sector"),
+        "industry": info.get("industry"),
+        "country": info.get("country"),
+        "website": info.get("website"),
+        "full_time_employees": info.get("fullTimeEmployees"),
+        "city": info.get("city"),
+    }
+
+
 def fetch_market_data(ticker: str) -> dict:
     """
     Live market data needed for valuation (P/E, EV/EBITDA, P/B, DDM, price
@@ -43,38 +63,26 @@ def fetch_market_data(ticker: str) -> dict:
     }
 
 
-def fetch_business_profile(ticker: str) -> dict:
-    """
-    Descriptive business/industry metadata (project spec Section 7).
-    Fetched live rather than stored — this is qualitative context, not
-    an auditable financial figure, so it doesn't need the EAV treatment.
-    """
-    t = yf.Ticker(ticker)
-    info = t.info
-    return {
-        "ticker": ticker,
-        "business_summary": info.get("longBusinessSummary"),
-        "sector": info.get("sector"),
-        "industry": info.get("industry"),
-        "country": info.get("country"),
-        "website": info.get("website"),
-        "full_time_employees": info.get("fullTimeEmployees"),
-        "city": info.get("city"),
-    }
-
-
 def fetch_price_history(ticker: str, period: str = "5y") -> list[dict]:
-    """OHLCV price history, normalized to list of dicts."""
+    """
+    OHLCV price history, normalized to list of dicts. Skips rows with
+    NaN/missing close prices (can occur on illiquid days or around
+    corporate actions) — same never-fabricate-data principle as the
+    financial metrics provider.
+    """
     t = yf.Ticker(ticker)
     hist = t.history(period=period)
     records = []
     for idx, row in hist.iterrows():
+        close = row["Close"]
+        if close is None or close != close:  # NaN check
+            continue
         records.append({
             "trade_date": idx.date(),
             "open": float(row["Open"]),
             "high": float(row["High"]),
             "low": float(row["Low"]),
-            "close": float(row["Close"]),
+            "close": float(close),
             "volume": int(row["Volume"]),
         })
     return records
