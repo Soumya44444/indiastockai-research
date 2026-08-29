@@ -1,18 +1,18 @@
 """
 Beginner screener presets (project spec Section 5).
-7 presets built now (don't require the valuation engine):
+All 9 presets now implemented:
   Strong Fundamentals, High Growth, Low Debt, High ROCE,
-  Strong Cash Flow, Quality Companies, Conservative Companies
-2 presets (Undervalued, Growth + Reasonable Valuation) require
-Phase 5 (Valuation Engine) and are added later.
+  Strong Cash Flow, Quality Companies, Conservative Companies,
+  Undervalued, Growth + Reasonable Valuation
 
 Each preset returns which specific criteria passed/failed per company —
 never a black-box pass/fail.
 
 Performance: fetches all metrics for a company in ONE bulk query
 (get_latest_metrics_bulk), then computes all ratios/scores from that
-in-memory dict — avoids the ~500+ round trips a naive per-ratio-query
-approach would cause across 50 companies.
+in-memory dict. Valuation (DCF) is the slowest part of a profile since
+it needs live market data + a full discounted cash flow — failures
+there degrade gracefully to None rather than breaking the whole profile.
 """
 from sqlalchemy.orm import Session
 from app.data.models import Company
@@ -21,6 +21,7 @@ from app.screener.metric_aggregator import (
 )
 from app.screener.ratio_calculator import calculate_all_ratios
 from app.screener.fundamental_score import calculate_fundamental_score
+from app.valuation.price_targets import generate_price_targets
 
 
 def build_company_profile(session: Session, company: Company) -> dict:
@@ -28,13 +29,20 @@ def build_company_profile(session: Session, company: Company) -> dict:
     metrics = get_latest_metrics_bulk(session, company.id)
     ratios = calculate_all_ratios(metrics)
 
-    # These two still need historical series (not covered by the bulk
-    # "latest value" fetch), so remain separate queries — 2 per company
-    # instead of the original ~13, still a big improvement.
     revenue_cagr = calculate_metric_cagr(session, company.id, "revenue", years=3)
     revenue_yoy = calculate_yoy_growth(session, company.id, "revenue")
 
-    fundamental_score = calculate_fundamental_score(metrics, revenue_cagr, revenue_yoy)
+    # Valuation is slower (live market data + DCF), so failures here
+    # degrade gracefully to None rather than breaking the whole profile.
+    valuation_upside = None
+    try:
+        price_targets = generate_price_targets(session, company)
+        if price_targets["available"] and price_targets["targets"]["base"]["available"]:
+            valuation_upside = price_targets["targets"]["base"]["upside_pct"]
+    except Exception:
+        pass
+
+    fundamental_score = calculate_fundamental_score(metrics, revenue_cagr, revenue_yoy, valuation_upside)
 
     return {
         "company_id": company.id,
@@ -43,6 +51,7 @@ def build_company_profile(session: Session, company: Company) -> dict:
         "sector": company.sector,
         "revenue_cagr_3y": revenue_cagr,
         "revenue_yoy": revenue_yoy,
+        "valuation_upside_pct": valuation_upside,
         "fundamental_score": fundamental_score["total_score_available_weight_only"],
         **ratios,
     }
@@ -109,6 +118,25 @@ def preset_conservative_companies(profile: dict) -> list[dict]:
     ]
 
 
+def preset_undervalued(profile: dict) -> list[dict]:
+    return [
+        _check("DCF upside >= 20%",
+               profile["valuation_upside_pct"] >= 0.20 if profile["valuation_upside_pct"] is not None else None,
+               f"valuation_upside_pct={profile['valuation_upside_pct']}"),
+    ]
+
+
+def preset_growth_reasonable_valuation(profile: dict) -> list[dict]:
+    return [
+        _check("3yr Revenue CAGR >= 12%",
+               profile["revenue_cagr_3y"] >= 0.12 if profile["revenue_cagr_3y"] is not None else None,
+               f"revenue_cagr_3y={profile['revenue_cagr_3y']}"),
+        _check("DCF upside >= -10% (not significantly overvalued)",
+               profile["valuation_upside_pct"] >= -0.10 if profile["valuation_upside_pct"] is not None else None,
+               f"valuation_upside_pct={profile['valuation_upside_pct']}"),
+    ]
+
+
 PRESETS = {
     "strong_fundamentals": preset_strong_fundamentals,
     "high_growth": preset_high_growth,
@@ -117,6 +145,8 @@ PRESETS = {
     "strong_cash_flow": preset_strong_cash_flow,
     "quality_companies": preset_quality_companies,
     "conservative_companies": preset_conservative_companies,
+    "undervalued": preset_undervalued,
+    "growth_reasonable_valuation": preset_growth_reasonable_valuation,
 }
 
 
@@ -152,24 +182,26 @@ def run_preset(session: Session, preset_name: str) -> list[dict]:
 
 
 if __name__ == "__main__":
-    import time
     from app.data.db import SessionLocal
+    from app.data.models import Company as CompanyModel
 
     session = SessionLocal()
-    preset_name = "quality_companies"
+    company = session.query(CompanyModel).filter_by(ticker="RELIANCE.NS").first()
 
-    print(f"Running preset: {preset_name}\n")
-    start = time.time()
-    results = run_preset(session, preset_name)
-    elapsed = time.time() - start
+    if not company:
+        print("RELIANCE.NS not found")
+    else:
+        profile = build_company_profile(session, company)
+        print(f"Profile for {profile['name']}:")
+        print(f"  valuation_upside_pct: {profile['valuation_upside_pct']}")
+        print(f"  fundamental_score: {profile['fundamental_score']}")
 
-    matched_count = sum(1 for r in results if r["matched"])
-    print(f"{matched_count} / {len(results)} companies matched (took {elapsed:.1f}s)\n")
+        print("\nTesting 'undervalued' preset criteria:")
+        for c in preset_undervalued(profile):
+            print(f"  {c['status']:8s} {c['criterion']} ({c['detail']})")
 
-    for r in results[:10]:
-        status = "MATCH" if r["matched"] else "no match"
-        print(f"[{status}] {r['ticker']} — {r['name']} (score={r['fundamental_score']})")
-        for c in r["criteria"]:
-            print(f"    {c['status']:8s} {c['criterion']} ({c['detail']})")
+        print("\nTesting 'growth_reasonable_valuation' preset criteria:")
+        for c in preset_growth_reasonable_valuation(profile):
+            print(f"  {c['status']:8s} {c['criterion']} ({c['detail']})")
 
     session.close()
