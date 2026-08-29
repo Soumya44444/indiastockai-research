@@ -4,10 +4,8 @@ Weights: Growth 20% | Profitability 20% | Balance Sheet 15% | Cash Flow 15%
          | Valuation 20% | Quality 10%
 
 Every component score comes with a plain-language rationale — no black-box.
-Valuation and Quality require Phase 5 (valuation engine) and Phase 3
-(earnings-quality flags) respectively; until those exist, they are marked
-"pending" rather than guessed, and excluded from the weighted total with
-that fact clearly stated.
+Quality still requires additional earnings-quality-flag-to-score mapping
+(deferred); Valuation is now wired in via Phase 5's price target engine.
 
 Accepts a pre-fetched metrics dict + growth figures, computed once per
 company by the caller — avoids redundant DB queries during screening.
@@ -22,8 +20,8 @@ COMPONENT_WEIGHTS = {
     "profitability": 20,
     "balance_sheet": 15,
     "cash_flow": 15,
-    "valuation": 20,   # pending — Phase 5
-    "quality": 10,      # pending — Phase 3 (earnings-quality flags)
+    "valuation": 20,
+    "quality": 10,      # still pending — needs earnings-quality-flag-to-score mapping
 }
 
 
@@ -112,20 +110,45 @@ def score_cash_flow(metrics: dict) -> dict:
     return {"score": score, "rationale": rationale}
 
 
-def calculate_fundamental_score(metrics: dict, revenue_cagr: float | None, revenue_yoy: float | None) -> dict:
+def score_valuation(base_case_upside_pct: float | None) -> dict:
+    """
+    Scores based on the DCF Base-case upside/downside (Phase 5).
+    Higher upside (undervalued relative to DCF fair value) scores higher.
+    Not a recommendation — a transparent input to the composite score.
+    """
+    score = _bucket_score(base_case_upside_pct, [
+        (0.30, 100), (0.15, 85), (0.0, 70), (-0.15, 50), (-0.30, 30), (-1.0, 15)
+    ])
+    rationale = [
+        f"DCF Base-case upside/downside: {base_case_upside_pct:.1%}"
+        if base_case_upside_pct is not None else "DCF Base-case upside/downside: N/A"
+    ]
+    return {"score": score, "rationale": rationale}
+
+
+def calculate_fundamental_score(
+    metrics: dict, revenue_cagr: float | None, revenue_yoy: float | None,
+    valuation_upside_pct: float | None = None
+) -> dict:
     """
     Returns full auditable breakdown: each component's score, weight,
-    weighted contribution, and rationale. Valuation and Quality are
-    marked 'pending' with weight excluded from the current total —
-    never guessed.
+    weighted contribution, and rationale. Quality remains 'pending' with
+    weight excluded from the current total — never guessed. Valuation is
+    scored when valuation_upside_pct is supplied (Phase 5 price targets);
+    otherwise remains pending too, so older callers keep working unchanged.
     """
+    valuation_component = (
+        score_valuation(valuation_upside_pct) if valuation_upside_pct is not None
+        else {"score": None, "rationale": ["Pending — no DCF valuation data supplied"]}
+    )
+
     components = {
         "growth": score_growth(revenue_cagr, revenue_yoy),
         "profitability": score_profitability(metrics),
         "balance_sheet": score_balance_sheet(metrics),
         "cash_flow": score_cash_flow(metrics),
-        "valuation": {"score": None, "rationale": ["Pending — requires Phase 5 (Valuation Engine)"]},
-        "quality": {"score": None, "rationale": ["Pending — requires Phase 3 (Earnings Quality Flags)"]},
+        "valuation": valuation_component,
+        "quality": {"score": None, "rationale": ["Pending — requires earnings-quality-flag-to-score mapping"]},
     }
 
     weighted_sum = 0.0
@@ -155,7 +178,7 @@ def calculate_fundamental_score(metrics: dict, revenue_cagr: float | None, reven
         "weight_pending_pct": 100 - weight_used,
         "note": (
             f"Total score is based on {weight_used}% of full weighting "
-            f"(Valuation and Quality components pending future phases)."
+            f"(remaining components pending)."
         ),
     }
 
@@ -166,6 +189,7 @@ if __name__ == "__main__":
     from app.screener.metric_aggregator import (
         get_latest_metrics_bulk, calculate_metric_cagr, calculate_yoy_growth
     )
+    from app.valuation.price_targets import generate_price_targets
 
     session = SessionLocal()
     company = session.query(Company).filter_by(ticker="RELIANCE.NS").first()
@@ -177,8 +201,13 @@ if __name__ == "__main__":
         revenue_cagr = calculate_metric_cagr(session, company.id, "revenue", years=3)
         revenue_yoy = calculate_yoy_growth(session, company.id, "revenue")
 
-        result = calculate_fundamental_score(metrics, revenue_cagr, revenue_yoy)
-        print(f"Fundamental Score for {company.name}\n")
+        price_targets = generate_price_targets(session, company)
+        valuation_upside = None
+        if price_targets["available"] and price_targets["targets"]["base"]["available"]:
+            valuation_upside = price_targets["targets"]["base"]["upside_pct"]
+
+        result = calculate_fundamental_score(metrics, revenue_cagr, revenue_yoy, valuation_upside)
+        print(f"Fundamental Score for {company.name} (now including Valuation)\n")
         for name, comp in result["components"].items():
             print(f"[{name.upper()}] weight={comp['weight_pct']}% score={comp['score']} "
                   f"contribution={comp['weighted_contribution']}")
