@@ -11,3 +11,4 @@ pytest
 pypdf
 sentence-transformers
 chromadb
+ollama
