@@ -25,6 +25,8 @@ from app.risk.risk_metrics import annualized_volatility, sharpe_ratio, sortino_r
 from app.risk.drawdown_var import calculate_max_drawdown, calculate_historical_var_cvar
 from app.backtesting.backtest_engine import run_backtest
 from app.backtesting.performance import calculate_backtest_performance
+from app.chatbot.chat import ask
+from app.chatbot.agentic_graph import ask_agentic
 
 app = FastAPI(
     title="IndiaStockAI Research Workstation API",
@@ -50,6 +52,9 @@ class CompanyResponse(BaseModel):
 class ErrorResponse(BaseModel):
     detail: str
 
+class ChatRequest(BaseModel):
+    question: str
+    agentic: bool = False  # False = single-tool (Phase 9), True = multi-tool (Phase 10)
 
 def get_db():
     db = SessionLocal()
@@ -274,3 +279,32 @@ def run_backtest_endpoint(start_date: str, end_date: str, top_n: int = 10):
         return performance
     finally:
         session.close()
+
+@app.post("/chat", tags=["Chatbot"])
+def chat(request: ChatRequest):
+    """
+    Ask the AI research chatbot a natural-language question.
+    Set agentic=true for questions needing multiple tools (e.g. comparisons).
+
+    WARNING: Uses a local LLM (Ollama/llama3.2) — responses typically take
+    10-60+ seconds (see LIMITATIONS.md). The answer is always verified
+    against real evidence before being returned; if verification fails,
+    raw verified data is shown instead of a possibly-incorrect number.
+    """
+    if not request.question or not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    if request.agentic:
+        result = ask_agentic(request.question)
+        return {
+            "question": result["question"],
+            "answer": result["answer"],
+            "audit_trail": {
+                "plan": result["plan"],
+                "tool_results": result["tool_results"],
+                "verified": result["verified"],
+                "unmatched_numbers": result["unmatched_numbers"],
+            },
+        }
+    else:
+        return ask(request.question)        
