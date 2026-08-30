@@ -88,3 +88,23 @@ an explicit "not available" / "pending" status rather than guessing or
 silently defaulting to a plausible-looking number. These limitations are
 disclosed here, in module docstrings, and (where applicable) directly in
 API/UI output — not buried or omitted.
+
+## RAG / Document Retrieval (Phase 8)
+
+### Embedding-based retrieval struggles with numeric-table-adjacent facts
+Financial research PDFs frequently place key facts (price target, rating,
+CMP) directly adjacent to dense numeric tables (shareholding patterns,
+financial summaries). Verified via direct testing: a query for
+"price target and rating" scored only 0.312 cosine similarity against
+the chunk actually containing "TP: INR665 (+21%) Buy" — moderate-low,
+because the surrounding table numbers dilute the chunk's semantic
+embedding signal. Pure semantic (embedding-based) search alone is not
+fully reliable for pinpointing short factual answers buried in
+tabular contexts.
+
+**Mitigation considered but deferred (future enhancement):** a hybrid
+retrieval approach — lightweight regex/pattern extraction for
+well-structured key fields (price target, rating, CMP) run alongside
+semantic search for qualitative/narrative content — would likely
+improve reliability for these specific fact types. Not built in this
+phase to avoid scope creep; documented here as a known gap.
