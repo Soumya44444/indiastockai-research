@@ -3,18 +3,27 @@ Full chatbot pipeline (project spec Section 19-20): Question -> Tool
 selection -> Tool execution (real data) -> LLM phrases the final answer
 FROM that real, PRE-FORMATTED data -> Answer with audit trail.
 
-CRITICAL FIXES (both found via direct testing, not theoretical):
+CRITICAL FIXES (all found via direct testing, not theoretical):
 1. Numbers are formatted into display strings (via app/chatbot/formatting.py)
    BEFORE being shown to the LLM. Testing revealed the LLM would introduce
    real scale errors (10x-100x) when asked to convert raw numbers into
    trillion/billion language itself.
 2. Even after pre-formatting, the LLM can still introduce digit-transposition
-   errors when copying a formatted string (e.g. writing "96,197" instead of
-   the real "69,197"). A verification guardrail checks every numeric token
-   in the LLM's final answer against the real evidence, and falls back to
-   showing raw verified data directly (in plain readable text, not raw JSON)
-   if anything doesn't match — a wrong number is never shown to the user,
-   per the project's zero-fabrication rule.
+   errors when copying a formatted string. A verification guardrail checks
+   every numeric token in the LLM's final answer against the real evidence,
+   and falls back to showing raw verified data directly (in plain readable
+   text, not JSON) if anything doesn't match.
+3. The verification guardrail had a false-positive bug: it extracted
+   "expected" numbers via regex over json.dumps() output, but json.dumps
+   escapes the ₹ symbol as "\\u20b9" — since our formatter writes "₹10.57"
+   with no space, the escaped text merges into "...b910.57...", corrupting
+   the expected-number set. Fixed by walking the actual dict/list structure
+   directly instead of going through json.dumps for number extraction.
+4. A second false-positive source: a number at the end of a sentence (e.g.
+   "...score of 55.") gets regex-captured WITH the trailing period ("55."),
+   which then fails to match the real evidence value ("55"). Fixed by
+   stripping trailing periods from extracted answer-number tokens before
+   comparing.
 
 The audit trail (tools called, evidence, calculations) is always shown
 alongside the answer — private model reasoning is not exposed, but the
@@ -110,32 +119,34 @@ def synthesize_answer(question: str, tool_name: str, formatted_result: dict) -> 
 def _verify_answer_numbers(answer_text: str, formatted_result: dict) -> dict:
     """
     Safety net: checks that every numeric token in the LLM's answer
-    actually matches a real value from the formatted evidence. Catches
-    digit-transposition and similar copy errors that survive even after
-    pre-formatting — a real failure mode found during testing (LLM wrote
-    "96,197" when the real formatted value was "69,197").
+    matches some numeric value ANYWHERE in the formatted evidence.
+
+    Extracts expected numbers by walking the actual dict/list structure
+    directly (never via json.dumps, which escapes ₹ in a way that
+    corrupts adjacent digits — see module docstring fix #3). Strips
+    trailing periods from extracted answer-number tokens before
+    comparing, since a number at a sentence's end (e.g. "score of 55.")
+    would otherwise be compared as "55." and wrongly fail to match the
+    real "55" (see module docstring fix #4).
     """
-    known_keys = CURRENCY_METRICS | PERCENT_METRICS | RATIO_METRICS
+    def _collect_numbers_from_value(value) -> set:
+        found = set()
+        if isinstance(value, dict):
+            for v in value.values():
+                found |= _collect_numbers_from_value(v)
+        elif isinstance(value, list):
+            for item in value:
+                found |= _collect_numbers_from_value(item)
+        elif isinstance(value, str):
+            found.update(re.findall(r'[\d,]+\.?\d*', value))
+        elif isinstance(value, (int, float)):
+            found.add(str(value))
+        return found
 
-    def _collect_values(obj):
-        values = []
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                if k in known_keys and isinstance(v, str):
-                    values.append(v)
-                else:
-                    values.extend(_collect_values(v))
-        elif isinstance(obj, list):
-            for item in obj:
-                values.extend(_collect_values(item))
-        return values
+    expected_numbers = _collect_numbers_from_value(formatted_result)
 
-    expected_values = _collect_values(formatted_result)
-
-    answer_numbers = re.findall(r'[\d,]+\.?\d*', answer_text)
-    expected_numbers = set()
-    for v in expected_values:
-        expected_numbers.update(re.findall(r'[\d,]+\.?\d*', v))
+    raw_answer_numbers = re.findall(r'[\d,]+\.?\d*', answer_text)
+    answer_numbers = [n.rstrip('.') for n in raw_answer_numbers]
 
     unmatched = [n for n in answer_numbers if n not in expected_numbers and len(n.replace(",", "")) >= 3]
 
