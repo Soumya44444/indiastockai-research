@@ -108,3 +108,30 @@ well-structured key fields (price target, rating, CMP) run alongside
 semantic search for qualitative/narrative content — would likely
 improve reliability for these specific fact types. Not built in this
 phase to avoid scope creep; documented here as a known gap.
+
+## Chatbot / LLM Orchestration (Phase 9)
+
+### Local LLM latency
+Per the project's zero-cost constraint, the chatbot uses Ollama running
+`llama3.2` locally (no paid API). Each question requires **two separate
+LLM inference calls** (tool selection, then answer synthesis), both
+running on CPU. Response times are typically **10-60+ seconds per
+question** — significantly slower than a paid cloud API (which would
+typically respond in 1-3 seconds) but with zero per-query cost.
+
+### LLM number-formatting reliability (mitigated, not eliminated)
+Testing revealed that even a well-prompted local LLM can introduce real
+numerical errors when handling large financial figures — both scale
+errors (10x-100x, when asked to convert raw numbers into
+trillion/billion language) and digit-transposition errors (even when
+copying an already-correctly-formatted string). Two defenses are in
+place: (1) all numbers are pre-formatted deterministically in Python
+before the LLM ever sees them, eliminating the scale-conversion failure
+mode entirely; (2) every number in the LLM's final answer is verified
+against the real evidence, and the system falls back to showing raw
+verified figures directly if anything doesn't match. This means a wrong
+number is never shown to the user — but it also means some answers will
+appear as a plain data listing rather than natural prose, when the
+LLM's phrasing attempt fails verification. This trade-off (occasional
+less-polished output vs. zero risk of a wrong number) was a deliberate
+choice consistent with the project's core "never fabricate" principle.
