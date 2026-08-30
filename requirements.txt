@@ -12,3 +12,5 @@ pypdf
 sentence-transformers
 chromadb
 ollama
+fastapi
+uvicorn[standard]
