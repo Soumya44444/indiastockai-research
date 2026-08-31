@@ -4,9 +4,12 @@ analysis modules as REST endpoints with validation, type hints, and
 auto-generated OpenAPI docs. No new business logic here — every endpoint
 wraps an already-tested function from earlier phases.
 """
+import logging
+import time
 from datetime import date
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.data.db import SessionLocal
@@ -28,6 +31,13 @@ from app.backtesting.performance import calculate_backtest_performance
 from app.chatbot.chat import ask
 from app.chatbot.agentic_graph import ask_agentic
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("indiastockai_api")
+
+
 app = FastAPI(
     title="IndiaStockAI Research Workstation API",
     description=(
@@ -39,7 +49,34 @@ app = FastAPI(
         "LIMITATIONS.md at the project root."
     ),
     version="0.1.0",
+    contact={"name": "IndiaStockAI Research Workstation"},
+    license_info={"name": "Educational/Research Use Only"},
 )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Logs every request with method, path, status, and duration —
+    per spec Section 24 (logging requirement)."""
+    start_time = time.time()
+    response = await call_next(request)
+    duration_ms = (time.time() - start_time) * 1000
+    logger.info(f"{request.method} {request.url.path} -> {response.status_code} ({duration_ms:.0f}ms)")
+    return response
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """
+    Catches any unhandled exception and returns a clean, safe error
+    response instead of leaking a stack trace to the client. The real
+    exception is still logged server-side for debugging.
+    """
+    logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An internal error occurred. This has been logged. Please try again or contact support."},
+    )
 
 
 class CompanyResponse(BaseModel):
@@ -52,9 +89,11 @@ class CompanyResponse(BaseModel):
 class ErrorResponse(BaseModel):
     detail: str
 
+
 class ChatRequest(BaseModel):
     question: str
     agentic: bool = False  # False = single-tool (Phase 9), True = multi-tool (Phase 10)
+
 
 def get_db():
     db = SessionLocal()
@@ -280,6 +319,7 @@ def run_backtest_endpoint(start_date: str, end_date: str, top_n: int = 10):
     finally:
         session.close()
 
+
 @app.post("/chat", tags=["Chatbot"])
 def chat(request: ChatRequest):
     """
@@ -307,4 +347,4 @@ def chat(request: ChatRequest):
             },
         }
     else:
-        return ask(request.question)        
+        return ask(request.question)
