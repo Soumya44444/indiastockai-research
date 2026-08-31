@@ -12,7 +12,12 @@ import streamlit as st
 
 API_BASE = "http://127.0.0.1:8000"
 
-st.set_page_config(page_title="IndiaStockAI Research Workstation", layout="wide")
+st.set_page_config(
+    page_title="IndiaStockAI Research Workstation",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 DISCLAIMER = (
     "⚠️ **For research/educational purposes only.** This is not investment "
@@ -304,8 +309,33 @@ def render_home():
     )
     st.warning(DISCLAIMER)
     st.divider()
-    st.markdown("### Get started")
-    st.markdown("Use the sidebar to navigate to Company Research, the Screener, or the AI Chatbot.")
+
+    st.markdown("### What you can do here")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("**🔎 Company Research**")
+        st.caption(
+            "Look up any company for a Simple Mode overview or a fully "
+            "transparent Analyst Mode breakdown (ratios, DCF, risk, forecast)."
+        )
+    with col2:
+        st.markdown("**🔍 Screener**")
+        st.caption(
+            "Run one of 9 fundamental screens (Quality, High Growth, "
+            "Undervalued, and more) across the entire company universe."
+        )
+    with col3:
+        st.markdown("**💬 AI Chatbot**")
+        st.caption(
+            "Ask natural-language questions — every answer is grounded in "
+            "real, verified data with a visible audit trail."
+        )
+
+    st.divider()
+    st.caption(
+        "Data source: yfinance (free/public data only). Some limitations "
+        "apply — see LIMITATIONS.md in the project repository for full detail."
+    )
 
 
 def main():
