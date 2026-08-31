@@ -21,10 +21,10 @@ DISCLAIMER = (
 )
 
 
-def api_get(path: str, params: dict | None = None) -> dict | None:
-    """Calls the FastAPI backend, returns None (and shows an error) on failure."""
+def api_get(path: str, params: dict | None = None, timeout: int = 60) -> dict | None:
+    """Calls the FastAPI backend (GET), returns None (and shows an error) on failure."""
     try:
-        response = requests.get(f"{API_BASE}{path}", params=params, timeout=60)
+        response = requests.get(f"{API_BASE}{path}", params=params, timeout=timeout)
         if response.status_code == 404:
             st.error(f"Not found: {response.json().get('detail', 'Unknown error')}")
             return None
@@ -38,6 +38,26 @@ def api_get(path: str, params: dict | None = None) -> dict | None:
         return None
     except requests.exceptions.Timeout:
         st.error("Request timed out. This calculation may take longer — try again.")
+        return None
+    except Exception as e:
+        st.error(f"Unexpected error: {e}")
+        return None
+
+
+def api_post(path: str, json_body: dict, timeout: int = 120) -> dict | None:
+    """Calls the FastAPI backend (POST), returns None (and shows an error) on failure."""
+    try:
+        response = requests.post(f"{API_BASE}{path}", json=json_body, timeout=timeout)
+        if response.status_code == 400:
+            st.error(f"Bad request: {response.json().get('detail', 'Unknown error')}")
+            return None
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.ConnectionError:
+        st.error("⚠️ Cannot connect to the API backend. Make sure it's running.")
+        return None
+    except requests.exceptions.Timeout:
+        st.error("Request timed out — the local LLM can take 10-60+ seconds. Try again.")
         return None
     except Exception as e:
         st.error(f"Unexpected error: {e}")
@@ -80,11 +100,7 @@ def render_simple_mode(ticker: str):
 
 
 def render_analyst_mode(ticker: str):
-    """
-    Analyst Mode: full technical transparency (spec Section 3: "Analyst
-    Mode must be fully transparent and auditable"). Every number shown
-    with its methodology/source.
-    """
+    """Analyst Mode: full technical transparency (spec Section 3)."""
     st.subheader(f"Analyst View: {ticker}")
 
     company = api_get(f"/companies/{ticker}")
@@ -187,11 +203,96 @@ def render_analyst_mode(ticker: str):
             for scenario, years_data in forecast_data.get("forecasts", {}).items():
                 with st.expander(f"{scenario.title()} Scenario"):
                     for y in years_data:
-                        st.write(f"Year {y['year']}: Revenue = ₹{y['revenue']:,.0f}, "
-                                 f"FCF = ₹{y['fcf']:,.0f}" if y.get('fcf') is not None else
-                                 f"Year {y['year']}: Revenue = ₹{y['revenue']:,.0f}")
+                        if y.get("fcf") is not None:
+                            st.write(f"Year {y['year']}: Revenue = ₹{y['revenue']:,.0f}, FCF = ₹{y['fcf']:,.0f}")
+                        else:
+                            st.write(f"Year {y['year']}: Revenue = ₹{y['revenue']:,.0f}")
         elif forecast_data:
             st.warning(f"Forecast not available: {forecast_data.get('reason', 'Unknown reason')}")
+
+
+def render_company_research_page():
+    """Company Research page: ticker search + Simple/Analyst mode toggle."""
+    mode = st.radio("Mode", ["Simple Mode", "Analyst Mode"], horizontal=True)
+    ticker_input = st.text_input("Company ticker (e.g. RELIANCE.NS)", value="")
+
+    if not ticker_input:
+        st.info("Enter a ticker above to see company research.")
+        return
+
+    ticker = ticker_input.strip().upper()
+    if mode == "Simple Mode":
+        render_simple_mode(ticker)
+    else:
+        render_analyst_mode(ticker)
+
+
+def render_screener_page():
+    """Screener page (spec Section 5): pick a preset, see matching companies."""
+    st.title("🔍 Fundamental Screener")
+    st.caption(
+        "Runs across all companies in the database and computes a full "
+        "fundamental profile for each — this can take 1-2 minutes."
+    )
+
+    presets_data = api_get("/screener/presets")
+    if not presets_data:
+        return
+
+    preset_labels = {p: p.replace("_", " ").title() for p in presets_data["presets"]}
+    selected_label = st.selectbox("Choose a screener preset", list(preset_labels.values()))
+    selected_preset = [k for k, v in preset_labels.items() if v == selected_label][0]
+
+    if st.button("Run Screener"):
+        with st.spinner(f"Running '{selected_label}' across all companies — this may take a minute or two..."):
+            result = api_get(f"/screener/run/{selected_preset}", timeout=180)
+
+        if result:
+            st.success(f"Found {result['matched_count']} matching companies")
+            for m in result["matches"]:
+                st.write(f"- **{m['ticker']}** — {m['name']} (Score: {m['score']})")
+
+
+def render_chatbot_page():
+    """Chatbot page (spec Section 19): natural-language Q&A over the platform's tools."""
+    st.title("💬 AI Research Assistant")
+    st.caption(
+        "Ask questions about company financials, valuation, risk, or screening. "
+        "Uses a local LLM — responses typically take 10-60+ seconds. Every "
+        "answer is verified against real data before being shown to you."
+    )
+
+    agentic = st.checkbox(
+        "Multi-company / comparison mode",
+        help="Enable for questions like 'Compare Reliance and TCS' that need multiple data lookups."
+    )
+
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    for entry in st.session_state.chat_history:
+        with st.chat_message("user"):
+            st.write(entry["question"])
+        with st.chat_message("assistant"):
+            st.write(entry["answer"])
+            with st.expander("Audit trail (tools used, evidence)"):
+                st.json(entry["audit_trail"])
+
+    question = st.chat_input("Ask a question about a company or comparison...")
+    if question:
+        with st.chat_message("user"):
+            st.write(question)
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking... (local LLM, may take up to a minute)"):
+                result = api_post("/chat", {"question": question, "agentic": agentic})
+            if result:
+                st.write(result["answer"])
+                with st.expander("Audit trail (tools used, evidence)"):
+                    st.json(result.get("audit_trail", {}))
+                st.session_state.chat_history.append({
+                    "question": question, "answer": result["answer"],
+                    "audit_trail": result.get("audit_trail", {}),
+                })
 
 
 def render_home():
@@ -202,30 +303,24 @@ def render_home():
         "risk, backtesting, and a source-grounded research chatbot."
     )
     st.warning(DISCLAIMER)
-
     st.divider()
     st.markdown("### Get started")
-    st.markdown(
-        "Use the sidebar to search for a company, run the screener, or "
-        "chat with the AI research assistant."
-    )
+    st.markdown("Use the sidebar to navigate to Company Research, the Screener, or the AI Chatbot.")
 
 
 def main():
     st.sidebar.title("Navigation")
-    mode = st.sidebar.radio("Mode", ["Simple Mode", "Analyst Mode"])
+    page = st.sidebar.radio("Go to", ["Home", "Company Research", "Screener", "Chatbot"])
     st.sidebar.divider()
 
-    ticker_input = st.sidebar.text_input("Company ticker (e.g. RELIANCE.NS)", value="")
-
-    if not ticker_input:
+    if page == "Home":
         render_home()
-    else:
-        ticker = ticker_input.strip().upper()
-        if mode == "Simple Mode":
-            render_simple_mode(ticker)
-        else:
-            render_analyst_mode(ticker)
+    elif page == "Company Research":
+        render_company_research_page()
+    elif page == "Screener":
+        render_screener_page()
+    elif page == "Chatbot":
+        render_chatbot_page()
 
     st.sidebar.divider()
     st.sidebar.caption(DISCLAIMER)
