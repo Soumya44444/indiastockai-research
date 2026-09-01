@@ -16,6 +16,11 @@ RUN pip install --no-cache-dir --break-system-packages -r requirements.txt
 # Copy application code
 COPY app/ ./app/
 
+# NOTE: Render (and most PaaS platforms) assign a dynamic port via the
+# PORT env var and expect the app to bind to it — hardcoding 8000 caused
+# Render's port-detection to fail ("No open ports detected"). Defaulting
+# to 8000 locally (docker-compose sets no PORT, so it falls back to 8000,
+# matching the "8000:8000" port mapping already in docker-compose.yml).
 EXPOSE 8000
 
-CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD uvicorn app.api.main:app --host 0.0.0.0 --port ${PORT:-8000}
