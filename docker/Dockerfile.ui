@@ -1,0 +1,19 @@
+# Dockerfile for the Streamlit UI (project spec Section 25)
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install Python dependencies (reuses the same requirements.txt as the
+# API — Streamlit only actually needs 'streamlit' + 'requests', but
+# sharing one requirements file keeps the two Dockerfiles in sync and
+# avoids a second dependency-drift bug like the langgraph one in Step 1)
+COPY requirements.txt .
+RUN pip install --no-cache-dir --break-system-packages -r requirements.txt
+
+# Copy only what the UI needs
+COPY app/ui/ ./app/ui/
+COPY app/__init__.py ./app/__init__.py
+
+EXPOSE 8501
+
+CMD ["streamlit", "run", "app/ui/streamlit_app.py", "--server.address=0.0.0.0", "--server.port=8501"]
