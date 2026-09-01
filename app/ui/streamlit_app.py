@@ -3,7 +3,6 @@ Streamlit UI (project spec Section 3, 12, 26): Simple Mode for
 non-technical users, Analyst Mode for full transparency. Calls the
 FastAPI backend (app/api/main.py) rather than the database directly —
 keeps the UI layer thin and reuses every already-tested calculation.
-
 STRICT RULE (per spec Section 26): no investment-advice language.
 Every page carries a visible disclaimer.
 """
@@ -13,8 +12,12 @@ import os
 
 try:
     API_BASE = st.secrets["API_BASE"]
-except Exception:
+except Exception as e:
     API_BASE = os.getenv("API_BASE", "http://127.0.0.1:8000")
+    st.warning(f"Secrets failed: {type(e).__name__}: {e}")
+
+# Temporary debug – remove after we confirm it works
+st.write("DEBUG → API_BASE is currently:", API_BASE)
 
 st.set_page_config(
     page_title="IndiaStockAI Research Workstation",
@@ -76,31 +79,26 @@ def api_post(path: str, json_body: dict, timeout: int = 120) -> dict | None:
 def render_simple_mode(ticker: str):
     """Simple Mode: clean, non-technical summary (spec Section 3)."""
     st.subheader(f"Overview: {ticker}")
-
     company = api_get(f"/companies/{ticker}")
     if not company:
         return
     st.markdown(f"**{company['name']}** · {company.get('sector', 'N/A')} · {company.get('industry', 'N/A')}")
-
     score_data = api_get(f"/companies/{ticker}/score")
     if score_data:
         breakdown = score_data["score_breakdown"]
         total = breakdown.get("total_score_available_weight_only")
-
         col1, col2 = st.columns([1, 2])
         with col1:
             if total is not None:
                 st.metric("Overall Fundamental Score", f"{total:.1f} / 100")
                 st.caption(f"Based on {breakdown['weight_used_pct']:.0f}% of full weighting "
                            f"(remaining components pending future phases)")
-
         with col2:
             st.markdown("**What this means:**")
             for name, comp in breakdown["components"].items():
                 if comp["score"] is not None:
                     label = name.replace("_", " ").title()
                     st.write(f"- **{label}**: {comp['score']}/100 — {comp['rationale'][0]}")
-
     st.divider()
     st.info(
         "For full technical detail (all ratios, DCF assumptions, risk metrics), "
@@ -111,14 +109,11 @@ def render_simple_mode(ticker: str):
 def render_analyst_mode(ticker: str):
     """Analyst Mode: full technical transparency (spec Section 3)."""
     st.subheader(f"Analyst View: {ticker}")
-
     company = api_get(f"/companies/{ticker}")
     if not company:
         return
     st.markdown(f"**{company['name']}** · {company.get('sector', 'N/A')} · {company.get('industry', 'N/A')}")
-
     tabs = st.tabs(["Fundamental Score", "Ratios", "Valuation", "Risk", "Forecast"])
-
     with tabs[0]:
         score_data = api_get(f"/companies/{ticker}/score")
         if score_data:
@@ -131,12 +126,10 @@ def render_analyst_mode(ticker: str):
                         st.write(f"- {r}")
                     if comp.get("weighted_contribution") is not None:
                         st.caption(f"Weighted contribution to total: {comp['weighted_contribution']}")
-
     with tabs[1]:
         ratios_data = api_get(f"/companies/{ticker}/ratios")
         if ratios_data:
             st.json(ratios_data["ratios"])
-
     with tabs[2]:
         with st.spinner("Computing DCF, DDM, and relative valuation (may take a moment)..."):
             valuation_data = api_get(f"/companies/{ticker}/valuation")
@@ -151,7 +144,6 @@ def render_analyst_mode(ticker: str):
                                  f"(EV = ₹{vals['enterprise_value']:,.0f})")
             else:
                 st.warning(f"DCF not available: {dcf.get('reason', 'Unknown reason')}")
-
             ddm = valuation_data.get("ddm", {})
             st.markdown("**DDM Cross-Check**")
             if ddm.get("available"):
@@ -159,11 +151,9 @@ def render_analyst_mode(ticker: str):
                 st.caption(ddm.get("methodology_note", ""))
             else:
                 st.info(f"DDM not applicable: {ddm.get('reason', 'Unknown reason')}")
-
             relative = valuation_data.get("relative_valuation", {})
             st.markdown("**Relative Valuation**")
             st.json(relative.get("target_multiples", {}))
-
         price_targets = api_get(f"/companies/{ticker}/price-targets")
         if price_targets and price_targets.get("available"):
             st.markdown("**Price Targets**")
@@ -171,7 +161,6 @@ def render_analyst_mode(ticker: str):
                 if t.get("available"):
                     st.write(f"- **{scenario.title()}**: ₹{t['target_price']:,.2f} "
                              f"(Upside: {t['upside_pct']:.1%}, Margin of Safety: {t['margin_of_safety_pct']:.1%})")
-
     with tabs[3]:
         with st.spinner("Computing risk metrics..."):
             risk_data = api_get(f"/companies/{ticker}/risk")
@@ -180,7 +169,6 @@ def render_analyst_mode(ticker: str):
             beta = risk_data.get("beta", {})
             vol = risk_data.get("volatility", {})
             sharpe = risk_data.get("sharpe", {})
-
             with col1:
                 if beta.get("available"):
                     st.metric("Beta (self-computed vs NIFTY 50)", f"{beta['beta']:.3f}")
@@ -191,19 +179,16 @@ def render_analyst_mode(ticker: str):
             with col3:
                 if sharpe.get("available"):
                     st.metric("Sharpe Ratio", f"{sharpe['sharpe_ratio']:.3f}")
-
             dd = risk_data.get("max_drawdown", {})
             if dd.get("available"):
                 st.markdown(f"**Max Drawdown**: {dd['max_drawdown_pct']:.1%} "
                             f"(Peak: {dd['peak_date']}, Trough: {dd['trough_date']}, "
                             f"Recovered: {dd.get('recovered', 'N/A')})")
-
             var_cvar = risk_data.get("var_cvar", {})
             if var_cvar.get("available"):
                 st.markdown(f"**1-Day VaR/CVaR (95% confidence)**: VaR = {var_cvar['var_pct']:.2%}, "
                             f"CVaR = {var_cvar['cvar_pct']:.2%}")
                 st.caption(var_cvar.get("interpretation", ""))
-
     with tabs[4]:
         with st.spinner("Generating forecast..."):
             forecast_data = api_get(f"/companies/{ticker}/forecast")
@@ -224,11 +209,9 @@ def render_company_research_page():
     """Company Research page: ticker search + Simple/Analyst mode toggle."""
     mode = st.radio("Mode", ["Simple Mode", "Analyst Mode"], horizontal=True)
     ticker_input = st.text_input("Company ticker (e.g. RELIANCE.NS)", value="")
-
     if not ticker_input:
         st.info("Enter a ticker above to see company research.")
         return
-
     ticker = ticker_input.strip().upper()
     if mode == "Simple Mode":
         render_simple_mode(ticker)
@@ -243,19 +226,15 @@ def render_screener_page():
         "Runs across all companies in the database and computes a full "
         "fundamental profile for each — this can take 1-2 minutes."
     )
-
     presets_data = api_get("/screener/presets")
     if not presets_data:
         return
-
     preset_labels = {p: p.replace("_", " ").title() for p in presets_data["presets"]}
     selected_label = st.selectbox("Choose a screener preset", list(preset_labels.values()))
     selected_preset = [k for k, v in preset_labels.items() if v == selected_label][0]
-
     if st.button("Run Screener"):
         with st.spinner(f"Running '{selected_label}' across all companies — this may take a minute or two..."):
             result = api_get(f"/screener/run/{selected_preset}", timeout=180)
-
         if result:
             st.success(f"Found {result['matched_count']} matching companies")
             for m in result["matches"]:
@@ -270,15 +249,12 @@ def render_chatbot_page():
         "Uses a local LLM — responses typically take 10-60+ seconds. Every "
         "answer is verified against real data before being shown to you."
     )
-
     agentic = st.checkbox(
         "Multi-company / comparison mode",
         help="Enable for questions like 'Compare Reliance and TCS' that need multiple data lookups."
     )
-
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
-
     for entry in st.session_state.chat_history:
         with st.chat_message("user"):
             st.write(entry["question"])
@@ -286,7 +262,6 @@ def render_chatbot_page():
             st.write(entry["answer"])
             with st.expander("Audit trail (tools used, evidence)"):
                 st.json(entry["audit_trail"])
-
     question = st.chat_input("Ask a question about a company or comparison...")
     if question:
         with st.chat_message("user"):
@@ -313,7 +288,6 @@ def render_home():
     )
     st.warning(DISCLAIMER)
     st.divider()
-
     st.markdown("### What you can do here")
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -334,7 +308,6 @@ def render_home():
             "Ask natural-language questions — every answer is grounded in "
             "real, verified data with a visible audit trail."
         )
-
     st.divider()
     st.caption(
         "Data source: yfinance (free/public data only). Some limitations "
@@ -346,7 +319,6 @@ def main():
     st.sidebar.title("Navigation")
     page = st.sidebar.radio("Go to", ["Home", "Company Research", "Screener", "Chatbot"])
     st.sidebar.divider()
-
     if page == "Home":
         render_home()
     elif page == "Company Research":
@@ -355,7 +327,6 @@ def main():
         render_screener_page()
     elif page == "Chatbot":
         render_chatbot_page()
-
     st.sidebar.divider()
     st.sidebar.caption(DISCLAIMER)
 
