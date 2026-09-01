@@ -22,7 +22,6 @@ from app.valuation.price_targets import generate_price_targets
 from app.risk.returns import get_daily_returns, get_daily_returns_by_date, calculate_beta, align_return_series
 from app.risk.risk_metrics import annualized_volatility, sharpe_ratio, sortino_ratio
 from app.risk.drawdown_var import calculate_max_drawdown, calculate_historical_var_cvar
-from app.rag.retrieval import search_documents, format_citation
 
 
 def _get_company(session, ticker: str) -> Company | None:
@@ -230,7 +229,20 @@ def run_backtest_tool(start_date: str, end_date: str, top_n: int = 10) -> dict:
 
 
 def search_documents_tool(query: str, ticker: str | None = None) -> dict:
-    """Tool: semantic search over ingested documents, with citations."""
+    """
+    Tool: semantic search over ingested documents, with citations.
+
+    Import is deliberately LOCAL (not top-level) — app.rag.retrieval pulls
+    in ChromaDB + sentence-transformers (which loads PyTorch), which alone
+    can use 300-500MB+ of RAM just from being imported. Keeping this import
+    lazy means that memory is only spent the first time someone actually
+    calls this tool, instead of at server startup — this matters a lot on
+    memory-constrained free-tier hosting (e.g. Render's 512MB limit), where
+    an eager top-level import here caused the API to be OOM-killed (exit
+    137) before it could even open a port.
+    """
+    from app.rag.retrieval import search_documents, format_citation
+
     result = search_documents(query, top_k=5, ticker=ticker)
     if not result["available"]:
         return result
