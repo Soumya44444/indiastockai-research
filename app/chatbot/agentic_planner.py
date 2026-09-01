@@ -8,10 +8,9 @@ final answer synthesis. The LLM still never invents a number — it only
 selects tools and (later) phrases the answer from real combined evidence.
 """
 import json
-import ollama
+from app.chatbot.llm_client import chat
 from app.chatbot.tools import TOOL_REGISTRY
 
-MODEL_NAME = "llama3.2"
 MAX_TOOL_CALLS_PER_QUERY = 4  # sanity cap — prevents runaway plans
 
 
@@ -50,8 +49,7 @@ def plan_tool_calls(user_question: str) -> dict:
     Fails safely (returns available=False) rather than guessing if the
     LLM's response isn't valid JSON or exceeds the sanity cap.
     """
-    response = ollama.chat(
-        model=MODEL_NAME,
+    response = chat(
         messages=[
             {"role": "system", "content": _build_planning_prompt()},
             {"role": "user", "content": user_question},

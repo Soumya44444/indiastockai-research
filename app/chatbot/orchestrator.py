@@ -1,18 +1,18 @@
 """
 LLM orchestration layer (project spec Section 19-20). Uses Ollama
-(local, zero-cost) to decide which deterministic tool(s) to call for a
-given question, then phrases the final answer FROM the tool's real
-output — the LLM never invents a financial number itself.
+(local, zero-cost) or Groq (free-tier cloud, used for the public
+deployment) — selected via app.chatbot.llm_client — to decide which
+deterministic tool(s) to call for a given question, then phrases the
+final answer FROM the tool's real output — the LLM never invents a
+financial number itself.
 
 Shows only the high-level workflow to the user (Question -> Tools used
 -> Evidence -> Answer), per spec Section 20 — private model reasoning
 is not exposed.
 """
 import json
-import ollama
+from app.chatbot.llm_client import chat
 from app.chatbot.tools import TOOL_REGISTRY
-
-MODEL_NAME = "llama3.2"
 
 
 def _build_tool_descriptions() -> str:
@@ -45,8 +45,7 @@ def select_tool(user_question: str) -> dict:
     parsed {tool, args} dict, or an error if the LLM's response isn't
     valid JSON (fails safely rather than guessing what it meant).
     """
-    response = ollama.chat(
-        model=MODEL_NAME,
+    response = chat(
         messages=[
             {"role": "system", "content": _build_system_prompt()},
             {"role": "user", "content": user_question},

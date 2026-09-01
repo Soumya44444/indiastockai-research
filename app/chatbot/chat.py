@@ -31,12 +31,10 @@ factual basis for the answer always is, per spec Section 22 (Auditability).
 """
 import json
 import re
-import ollama
+from app.chatbot.llm_client import chat
 from app.chatbot.orchestrator import select_tool, call_tool
 from app.chatbot.tools import TOOL_REGISTRY
 from app.chatbot.formatting import format_metrics_dict, CURRENCY_METRICS, PERCENT_METRICS, RATIO_METRICS
-
-MODEL_NAME = "llama3.2"
 
 
 def _prepare_evidence_for_llm(tool_result: dict) -> dict:
@@ -109,8 +107,7 @@ CRITICAL RULES:
 
 def synthesize_answer(question: str, tool_name: str, formatted_result: dict) -> str:
     """Asks the LLM to phrase a natural-language answer from pre-formatted tool output."""
-    response = ollama.chat(
-        model=MODEL_NAME,
+    response = chat(
         messages=[{"role": "user", "content": _build_answer_prompt(question, tool_name, formatted_result)}],
     )
     return response["message"]["content"].strip()
