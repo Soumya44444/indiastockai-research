@@ -16,8 +16,7 @@ except Exception as e:
     API_BASE = os.getenv("API_BASE", "http://127.0.0.1:8000")
     st.warning(f"Secrets failed: {type(e).__name__}: {e}")
 
-# Temporary debug – remove after we confirm it works
-st.write("DEBUG → API_BASE is currently:", API_BASE)
+
 
 st.set_page_config(
     page_title="IndiaStockAI Research Workstation",
