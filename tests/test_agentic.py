@@ -10,7 +10,7 @@ class TestPlanToolCallsValidation:
     """These tests exercise plan_tool_calls' validation logic by feeding
     it questions and checking the returned plan's structure — they don't
     mock the LLM call itself (that's covered by the manual integration
-    tests already run against real Ollama output), but validate that
+    tests already run against real Ollama/Groq output), but validate that
     ANY plan returned respects the registry and cap constraints."""
 
     def test_valid_plan_only_uses_known_tools(self):
@@ -27,7 +27,14 @@ class TestPlanToolCallsValidation:
 
 class TestPlanStructureValidationLogic:
     """Directly tests the validation logic inside plan_tool_calls by
-    constructing malformed inputs bypassing the LLM call, via monkeypatching."""
+    constructing malformed inputs bypassing the LLM call, via monkeypatching.
+
+    NOTE: agentic_planner.py now calls the shared app.chatbot.llm_client.chat
+    function (imported directly as `chat`) instead of `ollama.chat`, since
+    Phase 14 added Groq as a swappable provider alongside Ollama. These
+    tests patch `planner_module.chat` accordingly — the FakeResponse shape
+    ({"message": {"content": ...}}) is unchanged, since llm_client.chat()
+    normalizes both providers' responses to that same shape."""
 
     def test_rejects_non_list_response(self, monkeypatch):
         import app.chatbot.agentic_planner as planner_module
@@ -36,7 +43,7 @@ class TestPlanStructureValidationLogic:
             def __getitem__(self, key):
                 return {"content": '{"not": "a list"}'}
 
-        monkeypatch.setattr(planner_module.ollama, "chat", lambda **kwargs: FakeResponse())
+        monkeypatch.setattr(planner_module, "chat", lambda **kwargs: FakeResponse())
         result = plan_tool_calls("test question")
         assert result["available"] is False
         assert "not a list" in result["reason"].lower()
@@ -48,7 +55,7 @@ class TestPlanStructureValidationLogic:
             def __getitem__(self, key):
                 return {"content": "this is not json at all"}
 
-        monkeypatch.setattr(planner_module.ollama, "chat", lambda **kwargs: FakeResponse())
+        monkeypatch.setattr(planner_module, "chat", lambda **kwargs: FakeResponse())
         result = plan_tool_calls("test question")
         assert result["available"] is False
 
@@ -60,7 +67,7 @@ class TestPlanStructureValidationLogic:
             def __getitem__(self, key):
                 return {"content": json_module.dumps([{"tool": "nonexistent_tool", "args": {}}])}
 
-        monkeypatch.setattr(planner_module.ollama, "chat", lambda **kwargs: FakeResponse())
+        monkeypatch.setattr(planner_module, "chat", lambda **kwargs: FakeResponse())
         result = plan_tool_calls("test question")
         assert result["available"] is False
         assert "unknown tool" in result["reason"].lower()
@@ -75,7 +82,7 @@ class TestPlanStructureValidationLogic:
             def __getitem__(self, key):
                 return {"content": json_module.dumps(oversized_plan)}
 
-        monkeypatch.setattr(planner_module.ollama, "chat", lambda **kwargs: FakeResponse())
+        monkeypatch.setattr(planner_module, "chat", lambda **kwargs: FakeResponse())
         result = plan_tool_calls("test question")
         assert result["available"] is False
         assert "exceeded" in result["reason"].lower()
@@ -91,7 +98,7 @@ class TestPlanStructureValidationLogic:
             def __getitem__(self, key):
                 return {"content": fenced_content}
 
-        monkeypatch.setattr(planner_module.ollama, "chat", lambda **kwargs: FakeResponse())
+        monkeypatch.setattr(planner_module, "chat", lambda **kwargs: FakeResponse())
         result = plan_tool_calls("test question")
         assert result["available"] is True
         assert result["plan"] == valid_plan
