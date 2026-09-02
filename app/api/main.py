@@ -348,3 +348,43 @@ def chat(request: ChatRequest):
         }
     else:
         return ask(request.question)
+
+@app.get("/debug/yfinance/{ticker}")
+def debug_yfinance(ticker: str):
+    import yfinance as yf
+
+    t = yf.Ticker(ticker)
+
+    result = {
+        "ticker": ticker,
+        "info_current_price": None,
+        "info_market_cap": None,
+        "fast_last_price": None,
+        "fast_market_cap": None,
+        "history_rows": 0,
+    }
+
+    try:
+        info = t.info or {}
+        result["info_current_price"] = info.get("currentPrice")
+        result["info_market_cap"] = info.get("marketCap")
+    except Exception as e:
+        result["info_error"] = repr(e)
+
+    try:
+        fi = t.fast_info
+        result["fast_last_price"] = fi.get("last_price")
+        result["fast_market_cap"] = fi.get("market_cap")
+    except Exception as e:
+        result["fast_info_error"] = repr(e)
+
+    try:
+        history = t.history(period="5d")
+        result["history_rows"] = len(history)
+
+        if len(history):
+            result["last_close"] = float(history["Close"].iloc[-1])
+    except Exception as e:
+        result["history_error"] = repr(e)
+
+    return result    
