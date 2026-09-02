@@ -63,7 +63,7 @@ def api_post(path: str, json_body: dict, timeout: int = 120) -> dict | None:
         st.error("⚠️ Cannot connect to the API backend. Make sure it's running.")
         return None
     except requests.exceptions.Timeout:
-        st.error("Request timed out — the local LLM can take 10-60+ seconds. Try again.")
+        st.error("Request timed out — the LLM can take up to a minute on a cold start. Try again.")
         return None
     except Exception as e:
         st.error(f"Unexpected error: {e}")
@@ -264,27 +264,8 @@ def render_chatbot_page():
     st.title("💬 AI Research Assistant")
     st.caption(
         "Ask questions about company financials, valuation, risk, or screening. "
-        "Uses a local LLM — responses typically take 10-60+ seconds. Every "
-        "answer is verified against real data before being shown to you."
+        "Every answer is verified against real data before being shown to you."
     )
-
-    # The chatbot requires Ollama (a local LLM) running alongside the API.
-    # Free-tier cloud hosting (Render/Streamlit Cloud) can't run a persistent
-    # LLM process, so this feature only works when the project is run
-    # locally. Rather than let a raw 500 error confuse a visitor to the
-    # deployed demo, detect this upfront and explain clearly.
-    is_deployed = not (API_BASE.startswith("http://127.0.0.1") or API_BASE.startswith("http://api"))
-
-    if is_deployed:
-        st.warning(
-            "⚠️ **The AI Chatbot requires a local LLM (Ollama) and is not available "
-            "in this live demo.** All other features (Company Research, Analyst Mode, "
-            "and the Screener) are fully functional here.\n\n"
-            "To try the chatbot, clone the repository and run the project locally — "
-            "see the README for setup instructions (`ollama pull llama3.2`, then "
-            "`uvicorn` + `streamlit run` as described)."
-        )
-        return
 
     agentic = st.checkbox(
         "Multi-company / comparison mode",
@@ -307,7 +288,7 @@ def render_chatbot_page():
         with st.chat_message("user"):
             st.write(question)
         with st.chat_message("assistant"):
-            with st.spinner("Thinking... (local LLM, may take up to a minute)"):
+            with st.spinner("Thinking..."):
                 result = api_post("/chat", {"question": question, "agentic": agentic})
             if result:
                 st.write(result["answer"])
@@ -347,8 +328,7 @@ def render_home():
         st.markdown("**💬 AI Chatbot**")
         st.caption(
             "Ask natural-language questions — every answer is grounded in "
-            "real, verified data with a visible audit trail. (Available "
-            "when running locally with Ollama — see Chatbot page for detail.)"
+            "real, verified data with a visible audit trail."
         )
 
     st.divider()
