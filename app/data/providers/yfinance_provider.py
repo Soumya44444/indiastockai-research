@@ -1,16 +1,24 @@
 """
 yfinance-based data provider.
+
 Fetches company info, financials, and price history; normalizes into
 our audit-friendly format before it reaches the validation layer.
 """
+
 from datetime import date, datetime
+
 import yfinance as yf
 
 
 def fetch_company_info(ticker: str) -> dict:
     """Basic company metadata."""
     t = yf.Ticker(ticker)
-    info = t.info
+
+    try:
+        info = t.info or {}
+    except Exception:
+        info = {}
+
     return {
         "ticker": ticker,
         "name": info.get("longName") or info.get("shortName"),
@@ -23,11 +31,17 @@ def fetch_company_info(ticker: str) -> dict:
 def fetch_business_profile(ticker: str) -> dict:
     """
     Descriptive business/industry metadata (project spec Section 7).
+
     Fetched live rather than stored — this is qualitative context, not
     an auditable financial figure, so it doesn't need the EAV treatment.
     """
     t = yf.Ticker(ticker)
-    info = t.info
+
+    try:
+        info = t.info or {}
+    except Exception:
+        info = {}
+
     return {
         "ticker": ticker,
         "business_summary": info.get("longBusinessSummary"),
@@ -42,24 +56,113 @@ def fetch_business_profile(ticker: str) -> dict:
 
 def fetch_market_data(ticker: str) -> dict:
     """
-    Live market data needed for valuation (P/E, EV/EBITDA, P/B, DDM, price
-    targets). Fetched fresh rather than stored historically — current
-    price/shares outstanding/dividends are point-in-time snapshots, not
-    audited financial statements.
+    Live market data needed for valuation.
+
+    Yahoo's Ticker.info can return incomplete data on cloud deployments,
+    even when price history works correctly. Therefore:
+
+    1. Try Ticker.info for all available valuation fields.
+    2. Try fast_info as a secondary source.
+    3. Use recent price history as a reliable current-price fallback.
+    4. Calculate market cap from price x shares when possible.
     """
+
     t = yf.Ticker(ticker)
-    info = t.info
+
+    current_price = None
+    market_cap = None
+    shares_outstanding = None
+    trailing_pe = None
+    price_to_book = None
+    enterprise_value = None
+    beta = None
+    dividend_rate = None
+    payout_ratio = None
+
+    # ---------------------------------------------------------
+    # 1. Try Yahoo Ticker.info
+    # ---------------------------------------------------------
+    try:
+        info = t.info or {}
+
+        current_price = (
+            info.get("currentPrice")
+            or info.get("regularMarketPrice")
+        )
+
+        market_cap = info.get("marketCap")
+        shares_outstanding = info.get("sharesOutstanding")
+        trailing_pe = info.get("trailingPE")
+        price_to_book = info.get("priceToBook")
+        enterprise_value = info.get("enterpriseValue")
+        beta = info.get("beta")
+        dividend_rate = info.get("dividendRate")
+        payout_ratio = info.get("payoutRatio")
+
+    except Exception:
+        pass
+
+    # ---------------------------------------------------------
+    # 2. Try fast_info
+    # ---------------------------------------------------------
+    try:
+        fast_info = t.fast_info
+
+        if current_price is None:
+            try:
+                current_price = fast_info.get("last_price")
+            except Exception:
+                pass
+
+        if market_cap is None:
+            try:
+                market_cap = fast_info.get("market_cap")
+            except Exception:
+                pass
+
+    except Exception:
+        pass
+
+    # ---------------------------------------------------------
+    # 3. Reliable current-price fallback using history
+    # ---------------------------------------------------------
+    if current_price is None:
+        try:
+            history = t.history(period="5d")
+
+            if history is not None and not history.empty:
+                close = history["Close"].dropna()
+
+                if not close.empty:
+                    current_price = float(close.iloc[-1])
+
+        except Exception:
+            pass
+
+    # ---------------------------------------------------------
+    # 4. Calculate market cap when shares are available
+    # ---------------------------------------------------------
+    if (
+        market_cap is None
+        and current_price is not None
+        and shares_outstanding is not None
+    ):
+        try:
+            market_cap = float(current_price) * float(shares_outstanding)
+        except (TypeError, ValueError):
+            pass
+
     return {
         "ticker": ticker,
-        "current_price": info.get("currentPrice") or info.get("regularMarketPrice"),
-        "market_cap": info.get("marketCap"),
-        "shares_outstanding": info.get("sharesOutstanding"),
-        "trailing_pe": info.get("trailingPE"),
-        "price_to_book": info.get("priceToBook"),
-        "enterprise_value": info.get("enterpriseValue"),
-        "beta": info.get("beta"),
-        "dividend_rate": info.get("dividendRate"),
-        "payout_ratio": info.get("payoutRatio"),
+        "current_price": current_price,
+        "market_cap": market_cap,
+        "shares_outstanding": shares_outstanding,
+        "trailing_pe": trailing_pe,
+        "price_to_book": price_to_book,
+        "enterprise_value": enterprise_value,
+        "beta": beta,
+        "dividend_rate": dividend_rate,
+        "payout_ratio": payout_ratio,
     }
 
 
@@ -72,11 +175,15 @@ def fetch_price_history(ticker: str, period: str = "5y") -> list[dict]:
     """
     t = yf.Ticker(ticker)
     hist = t.history(period=period)
+
     records = []
+
     for idx, row in hist.iterrows():
         close = row["Close"]
-        if close is None or close != close:  # NaN check
+
+        if close is None or close != close:
             continue
+
         records.append({
             "trade_date": idx.date(),
             "open": float(row["Open"]),
@@ -85,12 +192,14 @@ def fetch_price_history(ticker: str, period: str = "5y") -> list[dict]:
             "close": float(close),
             "volume": int(row["Volume"]),
         })
+
     return records
 
 
 def fetch_financial_metrics(ticker: str) -> list[dict]:
     """
     Pulls annual + quarterly income statement, balance sheet, and cash flow.
+
     Returns a flat list of metric records ready for the validation layer.
     Skips NaN/None values so nothing invalid reaches the database.
     """
@@ -107,25 +216,47 @@ def fetch_financial_metrics(ticker: str) -> list[dict]:
     ]
 
     for statement_type, period_type, df in sources:
+
         if df is None or df.empty:
             continue
+
         for metric_name in df.index:
+
             for period_end, value in df.loc[metric_name].items():
+
                 if value is None:
                     continue
-                if value != value:  # NaN check (NaN != NaN is always True)
+
+                if value != value:
                     continue
+
                 try:
-                    period_end_date = period_end.date() if hasattr(period_end, "date") else period_end
+                    period_end_date = (
+                        period_end.date()
+                        if hasattr(period_end, "date")
+                        else period_end
+                    )
+
                     records.append({
-                        "metric_name": str(metric_name).strip().lower().replace(" ", "_"),
+                        "metric_name": (
+                            str(metric_name)
+                            .strip()
+                            .lower()
+                            .replace(" ", "_")
+                        ),
                         "statement_type": statement_type,
                         "period_type": period_type,
                         "period_end_date": period_end_date,
                         "value": float(value),
-                        "unit": "INR" if ticker.endswith(".NS") or ticker.endswith(".BO") else "USD",
+                        "unit": (
+                            "INR"
+                            if ticker.endswith(".NS")
+                            or ticker.endswith(".BO")
+                            else "USD"
+                        ),
                         "source": "yfinance",
                     })
+
                 except (ValueError, TypeError):
                     continue
 
@@ -133,20 +264,30 @@ def fetch_financial_metrics(ticker: str) -> list[dict]:
 
 
 if __name__ == "__main__":
+
     ticker = "RELIANCE.NS"
+
     info = fetch_company_info(ticker)
     print("Company info:", info)
 
+    market = fetch_market_data(ticker)
+    print("\nMarket data:", market)
+
     prices = fetch_price_history(ticker, period="5d")
     print(f"\nPrice history (last 5 days): {len(prices)} records")
+
     for p in prices[:3]:
         print(" ", p)
 
     metrics = fetch_financial_metrics(ticker)
     print(f"\nFinancial metrics: {len(metrics)} records")
+
     for m in metrics[:5]:
         print(" ", m)
 
     business = fetch_business_profile(ticker)
-    print(f"\nBusiness profile: {business['country']}, {business['city']}, "
-          f"{business['full_time_employees']} employees")
+    print(
+        f"\nBusiness profile: {business['country']}, "
+        f"{business['city']}, "
+        f"{business['full_time_employees']} employees"
+    )
