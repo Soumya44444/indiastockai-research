@@ -8,6 +8,7 @@ def _safe_float(value):
             return None
 
         return float(value)
+
     except (TypeError, ValueError):
         return None
 
@@ -256,8 +257,7 @@ def fetch_market_data(ticker: str) -> dict:
         latest dividend ÷ diluted EPS
 
     - Enterprise value:
-        market cap + debt - cash
-
+        market cap + debt - cash/investments
     """
 
     t = yf.Ticker(ticker)
@@ -274,7 +274,7 @@ def fetch_market_data(ticker: str) -> dict:
     payout_ratio = None
 
     # ---------------------------------------------------------
-    # 1. Price history
+    # 1. Current price
     # ---------------------------------------------------------
 
     try:
@@ -304,10 +304,7 @@ def fetch_market_data(ticker: str) -> dict:
         and shares_outstanding is not None
     ):
         try:
-            market_cap = (
-                current_price
-                * shares_outstanding
-            )
+            market_cap = current_price * shares_outstanding
         except Exception:
             market_cap = None
 
@@ -327,8 +324,6 @@ def fetch_market_data(ticker: str) -> dict:
 
     # ---------------------------------------------------------
     # 5. EPS
-    #
-    # Prefer diluted EPS.
     # ---------------------------------------------------------
 
     diluted_eps = _latest_value(
@@ -352,18 +347,12 @@ def fetch_market_data(ticker: str) -> dict:
         and diluted_eps > 0
     ):
         try:
-            trailing_pe = (
-                current_price
-                / diluted_eps
-            )
+            trailing_pe = current_price / diluted_eps
         except Exception:
             trailing_pe = None
 
     # ---------------------------------------------------------
     # 7. Book equity
-    #
-    # Prefer stockholders' equity.
-    # Fall back to total equity gross minority interest.
     # ---------------------------------------------------------
 
     book_equity = None
@@ -391,23 +380,22 @@ def fetch_market_data(ticker: str) -> dict:
         and book_equity > 0
     ):
         try:
-            price_to_book = (
-                market_cap
-                / book_equity
-            )
+            price_to_book = market_cap / book_equity
         except Exception:
             price_to_book = None
 
     # ---------------------------------------------------------
-    # 9. Debt and cash
-    #
-    # Build enterprise value ourselves.
+    # 9. Debt
     # ---------------------------------------------------------
 
     total_debt = _latest_value(
         balance_sheet,
         "Total Debt",
     )
+
+    # ---------------------------------------------------------
+    # 10. Cash + short-term investments
+    # ---------------------------------------------------------
 
     cash_and_investments = _latest_value(
         balance_sheet,
@@ -420,7 +408,12 @@ def fetch_market_data(ticker: str) -> dict:
             "Cash And Cash Equivalents",
         )
 
+    # ---------------------------------------------------------
+    # 11. Enterprise value
+    # ---------------------------------------------------------
+
     if market_cap is not None:
+
         try:
             enterprise_value = market_cap
 
@@ -434,22 +427,19 @@ def fetch_market_data(ticker: str) -> dict:
             enterprise_value = None
 
     # ---------------------------------------------------------
-    # 10. Beta
-    #
-    # Ticker.info beta is unavailable on Render, so calculate
-    # it from historical returns against NIFTY 50.
+    # 12. Beta
     # ---------------------------------------------------------
 
     beta = _calculate_beta(ticker)
 
     # ---------------------------------------------------------
-    # 11. Dividend
+    # 13. Dividend
     # ---------------------------------------------------------
 
     dividend_rate = _latest_dividend(t)
 
     # ---------------------------------------------------------
-    # 12. Payout ratio
+    # 14. Payout ratio
     # ---------------------------------------------------------
 
     if (
@@ -458,15 +448,12 @@ def fetch_market_data(ticker: str) -> dict:
         and diluted_eps > 0
     ):
         try:
-            payout_ratio = (
-                dividend_rate
-                / diluted_eps
-            )
+            payout_ratio = dividend_rate / diluted_eps
         except Exception:
             payout_ratio = None
 
     # ---------------------------------------------------------
-    # Return normalized data
+    # 15. Return
     # ---------------------------------------------------------
 
     return {
@@ -480,6 +467,10 @@ def fetch_market_data(ticker: str) -> dict:
         "beta": beta,
         "dividend_rate": dividend_rate,
         "payout_ratio": payout_ratio,
+
+        # Important for DCF:
+        "total_debt": total_debt,
+        "cash_and_investments": cash_and_investments,
     }
 
 
@@ -595,10 +586,7 @@ def fetch_financial_metrics(ticker: str) -> dict:
         and equity is not None
         and equity != 0
     ):
-        debt_to_equity = (
-            total_debt
-            / equity
-        )
+        debt_to_equity = total_debt / equity
 
     operating_margin = None
 
@@ -607,10 +595,7 @@ def fetch_financial_metrics(ticker: str) -> dict:
         and total_revenue is not None
         and total_revenue != 0
     ):
-        operating_margin = (
-            operating_income
-            / total_revenue
-        )
+        operating_margin = operating_income / total_revenue
 
     profit_margin = None
 
@@ -619,10 +604,7 @@ def fetch_financial_metrics(ticker: str) -> dict:
         and total_revenue is not None
         and total_revenue != 0
     ):
-        profit_margin = (
-            net_income
-            / total_revenue
-        )
+        profit_margin = net_income / total_revenue
 
     return {
         "ticker": ticker,
