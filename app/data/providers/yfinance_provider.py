@@ -1,17 +1,11 @@
-"""
-yfinance-based data provider.
-
-Fetches company info, financials, and price history; normalizes into
-our audit-friendly format before it reaches the validation layer.
-"""
-
-from datetime import date, datetime
-
 import yfinance as yf
 
 
 def fetch_company_info(ticker: str) -> dict:
-    """Basic company metadata."""
+    """
+    Fetch basic company information from Yahoo Finance.
+    """
+
     t = yf.Ticker(ticker)
 
     try:
@@ -24,17 +18,17 @@ def fetch_company_info(ticker: str) -> dict:
         "name": info.get("longName") or info.get("shortName"),
         "sector": info.get("sector"),
         "industry": info.get("industry"),
-        "isin": info.get("isin"),
+        "country": info.get("country"),
+        "website": info.get("website"),
+        "exchange": info.get("exchange"),
     }
 
 
 def fetch_business_profile(ticker: str) -> dict:
     """
-    Descriptive business/industry metadata (project spec Section 7).
-
-    Fetched live rather than stored — this is qualitative context, not
-    an auditable financial figure, so it doesn't need the EAV treatment.
+    Fetch business profile information from Yahoo Finance.
     """
+
     t = yf.Ticker(ticker)
 
     try:
@@ -44,27 +38,29 @@ def fetch_business_profile(ticker: str) -> dict:
 
     return {
         "ticker": ticker,
-        "business_summary": info.get("longBusinessSummary"),
+        "name": info.get("longName") or info.get("shortName"),
         "sector": info.get("sector"),
         "industry": info.get("industry"),
-        "country": info.get("country"),
+        "business_summary": info.get("longBusinessSummary"),
         "website": info.get("website"),
-        "full_time_employees": info.get("fullTimeEmployees"),
-        "city": info.get("city"),
+        "country": info.get("country"),
     }
 
 
 def fetch_market_data(ticker: str) -> dict:
     """
-    Live market data needed for valuation.
+    Fetch market data from Yahoo Finance.
 
-    Yahoo's Ticker.info can return incomplete data on cloud deployments,
-    even when price history works correctly. Therefore:
+    Yahoo Finance's Ticker.info and fast_info can return incomplete
+    data in deployed environments such as Render.
 
-    1. Try Ticker.info for all available valuation fields.
-    2. Try fast_info as a secondary source.
-    3. Use recent price history as a reliable current-price fallback.
-    4. Calculate market cap from price x shares when possible.
+    Therefore this function uses multiple fallbacks:
+
+    1. Ticker.info
+    2. Ticker.fast_info
+    3. Price history for current price
+    4. get_shares_full() for shares outstanding
+    5. Current price × shares outstanding for market cap
     """
 
     t = yf.Ticker(ticker)
@@ -80,8 +76,9 @@ def fetch_market_data(ticker: str) -> dict:
     payout_ratio = None
 
     # ---------------------------------------------------------
-    # 1. Try Yahoo Ticker.info
+    # 1. Try Ticker.info
     # ---------------------------------------------------------
+
     try:
         info = t.info or {}
 
@@ -105,6 +102,7 @@ def fetch_market_data(ticker: str) -> dict:
     # ---------------------------------------------------------
     # 2. Try fast_info
     # ---------------------------------------------------------
+
     try:
         fast_info = t.fast_info
 
@@ -124,8 +122,9 @@ def fetch_market_data(ticker: str) -> dict:
         pass
 
     # ---------------------------------------------------------
-    # 3. Reliable current-price fallback using history
+    # 3. Current price fallback using price history
     # ---------------------------------------------------------
+
     if current_price is None:
         try:
             history = t.history(period="5d")
@@ -140,17 +139,51 @@ def fetch_market_data(ticker: str) -> dict:
             pass
 
     # ---------------------------------------------------------
-    # 4. Calculate market cap when shares are available
+    # 4. Shares outstanding fallback
+    #
+    # Render does not provide sharesOutstanding through
+    # Ticker.info, but get_shares_full() works.
     # ---------------------------------------------------------
+
+    if shares_outstanding is None:
+        try:
+            shares = t.get_shares_full()
+
+            if shares is not None and not shares.empty:
+                shares = shares.dropna()
+
+                if not shares.empty:
+                    shares_outstanding = float(shares.iloc[-1])
+
+        except Exception:
+            pass
+
+    # ---------------------------------------------------------
+    # 5. Market cap fallback
+    #
+    # If Yahoo does not provide market cap directly,
+    # calculate it from:
+    #
+    # Market Cap = Current Price × Shares Outstanding
+    # ---------------------------------------------------------
+
     if (
         market_cap is None
         and current_price is not None
         and shares_outstanding is not None
     ):
         try:
-            market_cap = float(current_price) * float(shares_outstanding)
+            market_cap = (
+                float(current_price)
+                * float(shares_outstanding)
+            )
+
         except (TypeError, ValueError):
             pass
+
+    # ---------------------------------------------------------
+    # Return normalized market data
+    # ---------------------------------------------------------
 
     return {
         "ticker": ticker,
@@ -166,128 +199,55 @@ def fetch_market_data(ticker: str) -> dict:
     }
 
 
-def fetch_price_history(ticker: str, period: str = "5y") -> list[dict]:
+def fetch_price_history(
+    ticker: str,
+    period: str = "1y",
+    interval: str = "1d",
+):
     """
-    OHLCV price history, normalized to list of dicts. Skips rows with
-    NaN/missing close prices (can occur on illiquid days or around
-    corporate actions) — same never-fabricate-data principle as the
-    financial metrics provider.
+    Fetch historical price data from Yahoo Finance.
     """
+
     t = yf.Ticker(ticker)
-    hist = t.history(period=period)
 
-    records = []
+    try:
+        history = t.history(
+            period=period,
+            interval=interval,
+        )
 
-    for idx, row in hist.iterrows():
-        close = row["Close"]
+        return history
 
-        if close is None or close != close:
-            continue
-
-        records.append({
-            "trade_date": idx.date(),
-            "open": float(row["Open"]),
-            "high": float(row["High"]),
-            "low": float(row["Low"]),
-            "close": float(close),
-            "volume": int(row["Volume"]),
-        })
-
-    return records
+    except Exception:
+        return None
 
 
-def fetch_financial_metrics(ticker: str) -> list[dict]:
+def fetch_financial_metrics(ticker: str) -> dict:
     """
-    Pulls annual + quarterly income statement, balance sheet, and cash flow.
-
-    Returns a flat list of metric records ready for the validation layer.
-    Skips NaN/None values so nothing invalid reaches the database.
+    Fetch financial metrics from Yahoo Finance.
     """
+
     t = yf.Ticker(ticker)
-    records = []
 
-    sources = [
-        ("income", "annual", t.financials),
-        ("income", "quarterly", t.quarterly_financials),
-        ("balance", "annual", t.balance_sheet),
-        ("balance", "quarterly", t.quarterly_balance_sheet),
-        ("cashflow", "annual", t.cashflow),
-        ("cashflow", "quarterly", t.quarterly_cashflow),
-    ]
+    try:
+        info = t.info or {}
+    except Exception:
+        info = {}
 
-    for statement_type, period_type, df in sources:
-
-        if df is None or df.empty:
-            continue
-
-        for metric_name in df.index:
-
-            for period_end, value in df.loc[metric_name].items():
-
-                if value is None:
-                    continue
-
-                if value != value:
-                    continue
-
-                try:
-                    period_end_date = (
-                        period_end.date()
-                        if hasattr(period_end, "date")
-                        else period_end
-                    )
-
-                    records.append({
-                        "metric_name": (
-                            str(metric_name)
-                            .strip()
-                            .lower()
-                            .replace(" ", "_")
-                        ),
-                        "statement_type": statement_type,
-                        "period_type": period_type,
-                        "period_end_date": period_end_date,
-                        "value": float(value),
-                        "unit": (
-                            "INR"
-                            if ticker.endswith(".NS")
-                            or ticker.endswith(".BO")
-                            else "USD"
-                        ),
-                        "source": "yfinance",
-                    })
-
-                except (ValueError, TypeError):
-                    continue
-
-    return records
-
-
-if __name__ == "__main__":
-
-    ticker = "RELIANCE.NS"
-
-    info = fetch_company_info(ticker)
-    print("Company info:", info)
-
-    market = fetch_market_data(ticker)
-    print("\nMarket data:", market)
-
-    prices = fetch_price_history(ticker, period="5d")
-    print(f"\nPrice history (last 5 days): {len(prices)} records")
-
-    for p in prices[:3]:
-        print(" ", p)
-
-    metrics = fetch_financial_metrics(ticker)
-    print(f"\nFinancial metrics: {len(metrics)} records")
-
-    for m in metrics[:5]:
-        print(" ", m)
-
-    business = fetch_business_profile(ticker)
-    print(
-        f"\nBusiness profile: {business['country']}, "
-        f"{business['city']}, "
-        f"{business['full_time_employees']} employees"
-    )
+    return {
+        "ticker": ticker,
+        "total_revenue": info.get("totalRevenue"),
+        "revenue_growth": info.get("revenueGrowth"),
+        "gross_profit": info.get("grossProfits"),
+        "operating_margin": info.get("operatingMargins"),
+        "profit_margin": info.get("profitMargins"),
+        "return_on_equity": info.get("returnOnEquity"),
+        "return_on_assets": info.get("returnOnAssets"),
+        "ebitda": info.get("ebitda"),
+        "free_cash_flow": info.get("freeCashflow"),
+        "total_cash": info.get("totalCash"),
+        "total_debt": info.get("totalDebt"),
+        "debt_to_equity": info.get("debtToEquity"),
+        "current_ratio": info.get("currentRatio"),
+        "quick_ratio": info.get("quickRatio"),
+    }
