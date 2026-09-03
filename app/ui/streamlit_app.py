@@ -220,7 +220,7 @@ def render_analyst_mode(ticker: str):
 def render_company_research_page():
     """Company Research page: ticker search + Simple/Analyst mode toggle."""
     mode = st.radio("Mode", ["Simple Mode", "Analyst Mode"], horizontal=True)
-    ticker_input = st.text_input("Company ticker (e.g. RELIANCE.NS)", value="")
+    ticker_input = st.text_input("Company ticker (e.g. ITC.NS)", value="")
 
     if not ticker_input:
         st.info("Enter a ticker above to see company research.")
